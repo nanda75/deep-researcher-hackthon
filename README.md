@@ -16,8 +16,15 @@ python3 agent.py "How are multi-agent systems changing knowledge work?"
 
 The virtual environment is a private box of libraries for this project. The agent still runs without an API key using its offline fallback.
 
+## Build the dashboard
+```bash
+npm install
+npm run build
+```
+
 ## Connect the dashboard to Python
 
+### Terminal -1
 Start the local bridge in one terminal:
 
 ```bash
@@ -27,6 +34,7 @@ python3 agent.py --serve
 
 Keep that terminal open, then start the dashboard in another:
 
+### Terminal -2
 ```bash
 npm run dev
 ```
