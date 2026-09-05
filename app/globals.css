@@ -1,0 +1,22 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+}
+
+:root { --background: #08090c; --foreground: #f4f4f5; --border: oklch(1 0 0 / 10%); --ring: oklch(0.8 0.15 190); }
+* { box-sizing: border-box; }
+html { background: #08090c; }
+body { margin: 0; background: #08090c; font-family: var(--font-geist-sans), Arial, sans-serif; }
+button, textarea { font: inherit; }
+button { cursor: pointer; }
+::selection { background: #67e8f9; color: #08090c; }

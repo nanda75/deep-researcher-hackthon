@@ -1,0 +1,19 @@
+# Dependencies and local environments
+node_modules/
+.venv/
+__pycache__/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Generated build output
+dist/
+.next/
+.vinext/
+.wrangler/
+
+# Local files
+.DS_Store
+*.pyc
