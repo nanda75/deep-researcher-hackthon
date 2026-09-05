@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Researcher. | Multi-agent intelligence',
+  title: 'Deep Researcher | Multi-agent intelligence',
   description: 'Turn complex questions into defensible points of view with a visible multi-agent research pipeline.',
 };
 

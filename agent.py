@@ -3,9 +3,14 @@
 import os
 import json
 import sys
+import hashlib
+import secrets
+import sqlite3
+import time
 import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable, TypedDict
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 
@@ -19,6 +24,63 @@ from langgraph.graph import END, START, StateGraph
 from langchain_openrouter import ChatOpenRouter
 
 load_dotenv()
+
+DB_PATH = os.getenv("RESEARCHER_DB_PATH", "researcher.sqlite3")
+
+
+def database() -> sqlite3.Connection:
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def initialize_database() -> None:
+    with database() as connection:
+        connection.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', nickname TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)")
+        for column in ("name", "nickname"):
+            try:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+        connection.execute("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)")
+        connection.execute("CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, question TEXT NOT NULL, report TEXT NOT NULL, sources_json TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)")
+        connection.execute("CREATE INDEX IF NOT EXISTS runs_user_created_idx ON runs(user_id, created_at DESC)")
+
+
+def password_hash(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 120_000).hex()
+    return f"{salt}${digest}"
+
+
+def password_matches(password: str, stored: str) -> bool:
+    try:
+        salt, digest = stored.split("$", 1)
+        candidate = password_hash(password, salt).split("$", 1)[1]
+        return secrets.compare_digest(candidate, digest)
+    except ValueError:
+        return False
+
+
+def create_session(user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with database() as connection:
+        connection.execute("INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)", (token_hash, user_id, int(time.time())))
+    return token
+
+
+def session_user(token: str) -> int | None:
+    if not token:
+        return None
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    with database() as connection:
+        row = connection.execute("SELECT user_id FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
+    return int(row["user_id"]) if row else None
+
+
+initialize_database()
 
 ProgressCallback = Callable[[dict[str, object]], None]
 _progress_callback: ProgressCallback | None = None
@@ -93,6 +155,14 @@ def extract_sources(raw: str, question: str) -> list[dict[str, object]]:
     except (ValueError, TypeError):
         pass
     return []
+
+
+def save_run(user_id: int, question: str, state: ResearchState) -> None:
+    with database() as connection:
+        connection.execute(
+            "INSERT INTO runs (user_id, question, report, sources_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, question, state.get("report", ""), json.dumps(state.get("sources", [])), int(time.time())),
+        )
 
 # Nodes: each small function does one job and returns only what it added.
 def retrieve_step(state: ResearchState) -> dict[str, object]:
@@ -183,11 +253,19 @@ class AgentHandler(BaseHTTPRequestHandler):
     """A tiny standard-library bridge for the browser UI."""
 
     def add_cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        origin = self.headers.get("Origin", "")
+        if origin in {
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+        }:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 
-    def send_json(self, status: int, payload: dict[str, str]) -> None:
+    def send_json(self, status: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.add_cors()
@@ -205,25 +283,88 @@ class AgentHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self.send_json(200, {"status": "ready", "message": "Researcher agent is ready."})
             return
+        if urlparse(self.path).path == "/history":
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            user_id = session_user(token)
+            if user_id is None:
+                self.send_json(401, {"error": "Please sign in before viewing history."})
+                return
+            with database() as connection:
+                rows = connection.execute("SELECT id, question, report, sources_json, created_at FROM runs WHERE user_id = ? ORDER BY created_at DESC LIMIT 20", (user_id,)).fetchall()
+            self.send_json(200, {"runs": [{"id": row["id"], "question": row["question"], "report": row["report"], "sources": json.loads(row["sources_json"]), "created_at": row["created_at"]} for row in rows]})
+            return
         self.send_json(404, {"error": "Try GET /health or POST /run."})
 
     def do_POST(self) -> None:
-        if self.path != "/run":
+        path = urlparse(self.path).path
+        if path not in ("/run", "/history/clear", "/auth/register", "/auth/login", "/auth/forgot", "/auth/logout"):
             self.send_json(404, {"error": "Try POST /run."})
             return
         length = int(self.headers.get("Content-Length", "0"))
         try:
             request = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/auth/logout":
+                token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                if token:
+                    token_hash = hashlib.sha256(token.encode()).hexdigest()
+                    with database() as connection:
+                        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+                self.send_json(200, {"message": "Signed out."})
+                return
+            if path == "/history/clear":
+                token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+                user_id = session_user(token)
+                if user_id is None:
+                    self.send_json(401, {"error": "Please sign in before clearing history."})
+                    return
+                with database() as connection:
+                    connection.execute("DELETE FROM runs WHERE user_id = ?", (user_id,))
+                self.send_json(200, {"message": "Investigation history cleared."})
+                return
+            if path.startswith("/auth/"):
+                email = str(request.get("email", "")).strip().lower()
+                password = str(request.get("password", ""))
+                name = str(request.get("name", "")).strip()
+                nickname = str(request.get("nickname", "")).strip()
+                if "@" not in email or (path != "/auth/forgot" and len(password) < 8):
+                    self.send_json(400, {"error": "Use a valid email and a password of at least 8 characters."})
+                    return
+                if path == "/auth/register" and (not name or not nickname):
+                    self.send_json(400, {"error": "Name and nickname are required for registration."})
+                    return
+                if path == "/auth/forgot":
+                    self.send_json(200, {"message": "If that account exists, reset instructions will be sent when email delivery is configured."})
+                    return
+                with database() as connection:
+                    row = connection.execute("SELECT id, email, password_hash, name, nickname FROM users WHERE email = ?", (email,)).fetchone()
+                    if path == "/auth/register":
+                        if row:
+                            self.send_json(409, {"error": "An account with this email already exists."})
+                            return
+                        cursor = connection.execute("INSERT INTO users (email, password_hash, name, nickname, created_at) VALUES (?, ?, ?, ?, ?)", (email, password_hash(password), name, nickname, int(time.time())))
+                        user_id = int(cursor.lastrowid)
+                    else:
+                        if not row or not password_matches(password, row["password_hash"]):
+                            self.send_json(401, {"error": "Email or password is incorrect."})
+                            return
+                        user_id = int(row["id"])
+                self.send_json(200, {"user": {"id": user_id, "email": email, "name": name or row["name"], "nickname": nickname or row["nickname"]}, "token": create_session(user_id)})
+                return
+
             question = str(request.get("question", "")).strip()
             if not question:
                 self.send_json(400, {"error": "Please include a question."})
+                return
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            user_id = session_user(token)
+            if user_id is None:
+                self.send_json(401, {"error": "Please sign in before running research."})
                 return
             step_indexes = {"retrieve": 0, "analyze": 1, "insight": 2, "report": 3}
             self.send_response(200)
             self.add_cors()
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
             self.end_headers()
 
             def emit(event: dict[str, object]) -> None:
@@ -232,7 +373,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
 
             final_state = run_question(question, emit)
+            save_run(user_id, question, final_state)
             emit({"type": "complete", "question": question, "report": final_state["report"]})
+            # This bridge handles one request at a time. Closing the completed
+            # SSE response releases the server for the next investigation.
+            self.close_connection = True
         except Exception as error:
             try:
                 self.send_json(500, {"error": f"The agent could not finish: {type(error).__name__}"})
@@ -243,7 +388,13 @@ class AgentHandler(BaseHTTPRequestHandler):
 def serve() -> None:
     print("Researcher agent bridge listening at http://127.0.0.1:8787")
     print("Keep this terminal open while using the dashboard. Press Ctrl+C to stop.\n")
-    HTTPServer(("127.0.0.1", 8787), AgentHandler).serve_forever()
+    server = HTTPServer(("127.0.0.1", 8787), AgentHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nResearcher agent bridge stopped.")
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

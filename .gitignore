@@ -19,3 +19,4 @@ dist/
 # Local files
 .DS_Store
 *.pyc
+*.sqlite3

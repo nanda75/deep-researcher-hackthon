@@ -1,4 +1,4 @@
-# Researcher. — beginner LangGraph agent
+# Deep Researcher — beginner LangGraph agent
 
 This project has two parts: the Researcher. dashboard is the visual companion, and `agent.py` is the real end-to-end LangGraph agent required by the workshop brief.
 
