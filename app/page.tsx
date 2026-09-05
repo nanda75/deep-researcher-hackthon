@@ -5,11 +5,9 @@ import {
   ArrowUpRight,
   BookOpen,
   Check,
-  ChevronDown,
   Clock3,
   Compass,
   FileText,
-  Globe2,
   Layers3,
   Lightbulb,
   Menu,
@@ -87,6 +85,9 @@ export default function Home() {
   const [authName, setAuthName] = useState("");
   const [authNickname, setAuthNickname] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [studioStatus, setStudioStatus] = useState<"checking" | "connected" | "offline">(
+    "checking",
+  );
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -94,6 +95,26 @@ export default function Home() {
     document.addEventListener("click", closeMenu);
     return () => document.removeEventListener("click", closeMenu);
   }, [accountMenuOpen]);
+
+  async function checkStudio() {
+    setStudioStatus("checking");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch("http://127.0.0.1:2024/ok", {
+        signal: controller.signal,
+      });
+      setStudioStatus(response.ok ? "connected" : "offline");
+    } catch {
+      setStudioStatus("offline");
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  useEffect(() => {
+    void checkStudio();
+  }, []);
 
   function scrollToId(id: string) {
     setActiveSection(id);
@@ -114,7 +135,8 @@ export default function Home() {
   }
 
   async function clearHistory() {
-    if (!window.confirm("Clear all saved investigations and recent runs? This cannot be undone.")) return;
+    if (!window.confirm("Clear all saved investigations and recent runs? This cannot be undone."))
+      return;
     // Clear the visible state immediately, then persist the deletion.
     setRunHistory([]);
     resetInvestigation();
@@ -195,7 +217,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
         body: JSON.stringify({ question: query }),
       });
-      if (!response.ok) throw new Error("Agent bridge is not ready");
+      if (!response.ok) {
+        const errorResult = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errorResult.error || "Agent bridge is not ready");
+      }
       if (!response.body) throw new Error("Agent did not return a live stream");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -265,10 +290,8 @@ export default function Home() {
         }
         if (chunk.done) break;
       }
-    } catch {
-      setConnection(
-        "Agent bridge unavailable · run `python3 agent.py --serve` for live Python results",
-      );
+    } catch (error) {
+      setConnection(error instanceof Error ? error.message : "The research request was blocked.");
     } finally {
       setRunning(false);
     }
@@ -429,7 +452,10 @@ export default function Home() {
           </div>
           <div className="relative flex items-center gap-3">
             <button
-              onClick={(event) => { event.stopPropagation(); setAccountMenuOpen(!accountMenuOpen); }}
+              onClick={(event) => {
+                event.stopPropagation();
+                setAccountMenuOpen(!accountMenuOpen);
+              }}
               aria-expanded={accountMenuOpen}
               aria-label="Open account menu"
               className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-orange-300 to-pink-400 text-xs font-bold text-black"
@@ -437,7 +463,10 @@ export default function Home() {
               {user.nickname.slice(0, 2).toUpperCase()}
             </button>
             {accountMenuOpen && (
-              <div onClick={(event) => event.stopPropagation()} className="absolute right-0 top-11 z-50 w-48 rounded-xl border border-white/10 bg-[#10151b] p-2 shadow-2xl">
+              <div
+                onClick={(event) => event.stopPropagation()}
+                className="absolute right-0 top-11 z-50 w-48 rounded-xl border border-white/10 bg-[#10151b] p-2 shadow-2xl"
+              >
                 <p className="px-3 py-2 text-xs font-semibold text-white">{user.nickname}</p>
                 <p className="truncate px-3 pb-2 text-[10px] text-zinc-500">{user.email}</p>
                 <button
@@ -506,6 +535,32 @@ export default function Home() {
             <Trash2 size={16} />
             Clear My Investigations
           </button>
+          <div className="mt-5 rounded-lg border border-white/[0.08] bg-white/[0.02] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <a
+                href="https://smith.langchain.com"
+                target="_blank"
+                rel="noreferrer"
+                className="flex min-w-0 items-center gap-2 text-xs font-medium text-zinc-300 hover:text-cyan-300"
+              >
+                <Compass size={14} className="shrink-0 text-cyan-300" />
+                <span className="truncate">LangSmith Studio</span>
+                <ArrowUpRight size={13} className="shrink-0" />
+              </a>
+              <button
+                onClick={checkStudio}
+                aria-label="Check LangSmith Studio status"
+                className="shrink-0 text-[10px] text-zinc-600 hover:text-white"
+              >
+                Check
+              </button>
+            </div>
+            <p className="mt-2 text-[10px] leading-4 text-zinc-600">
+              {studioStatus === "checking" && "Checking local Studio…"}
+              {studioStatus === "connected" && "Local Studio connected · :2024"}
+              {studioStatus === "offline" && "Local Studio not running"}
+            </p>
+          </div>
           <div className="my-8 h-px bg-white/[0.07]" />
           <span className="mb-3 block px-3 font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-600">
             Recent runs · {runHistory.length}
@@ -569,9 +624,7 @@ export default function Home() {
                   placeholder="What do you want to understand?"
                 />
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/[0.08] pt-5">
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                   
-                  </div>
+                  <div className="flex items-center gap-2 text-xs text-zinc-500"></div>
                   <div className="flex items-center gap-3">
                     <span className="hidden text-[10px] text-zinc-600 sm:inline">{connection}</span>
                     <button

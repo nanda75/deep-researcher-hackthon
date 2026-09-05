@@ -2,6 +2,8 @@
 
 This project has two parts: the Researcher. dashboard is the visual companion, and `agent.py` is the real end-to-end LangGraph agent required by the workshop brief.
 
+For the architecture, technical approach, functional flow, authentication, and safety details, see the [Implementation Overview](IMPLEMENTATION.md).
+
 ## Run it on macOS
 
 Python 3.11 or newer is required. This computer has Python 3.14.
@@ -61,3 +63,13 @@ The graph uses LangChain's `ChatOpenRouter` integration. When LangSmith tracing 
 The terminal prints four visible nodes in order: `retrieve -> analyze -> insight -> report`. Each node receives the shared state and returns only the new piece it created. The arrows between nodes are the edges.
 
 Try your own question, then add a fifth node such as `translate` or `shorten`.
+
+## Validate LangGraph / LangSmith Studio
+
+Start the local LangGraph Studio-compatible server from the project root:
+
+```bash
+langgraph dev --port 2024
+```
+
+After it starts, the sidebar’s **LangSmith Studio** card checks `http://127.0.0.1:2024/ok` and reports whether the local Studio is connected. The card also links to the LangSmith workspace at [smith.langchain.com](https://smith.langchain.com).
