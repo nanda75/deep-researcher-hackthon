@@ -1,7 +1,0 @@
-backend/.venv/
-backend/.pytest_cache/
-backend/**/*.egg-info/
-backend/.env
-frontend/node_modules/
-frontend/dist/
-.DS_Store
