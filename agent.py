@@ -3,14 +3,32 @@
 import os
 import json
 import sys
+import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 from dotenv import load_dotenv
+
+warnings.filterwarnings(
+    "ignore",
+    message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.",
+    category=UserWarning,
+)
+
 from langgraph.graph import END, START, StateGraph
-from openai import OpenAI
+from langchain_openrouter import ChatOpenRouter
 
 load_dotenv()
+
+ProgressCallback = Callable[[dict[str, object]], None]
+_progress_callback: ProgressCallback | None = None
+
+
+def notify_progress(step: str, status: str, message: str, content: str = "", sources: list[dict[str, object]] | None = None) -> None:
+    """Print progress in the terminal and optionally send it to the dashboard."""
+    print(f"-> [{step}] {status} — {message}")
+    if _progress_callback:
+        _progress_callback({"type": "step", "step": step, "status": status, "message": message, "content": content, "sources": sources or []})
 
 
 # State: one shared note travels through the graph.
@@ -18,70 +36,108 @@ class ResearchState(TypedDict, total=False):
     question: str
     plan: str
     findings: str
+    sources: list[dict[str, object]]
     analysis: str
     insights: str
     report: str
 
 
-def ask_llm(instruction: str, fallback: str) -> str:
-    """Ask OpenRouter when configured; otherwise keep the demo offline."""
+def ask_llm(instruction: str, fallback: str, step_name: str) -> str:
+    """Ask OpenRouter through LangChain; otherwise keep the demo offline."""
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         return fallback
 
     try:
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
-        )
-        response = client.chat.completions.create(
+        model = ChatOpenRouter(
             model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": "You are a careful research assistant. Be concise and label uncertainty."},
-                {"role": "user", "content": instruction},
-            ],
+            api_key=api_key,
+            temperature=0,
         )
-        return response.choices[0].message.content or fallback
+        response = model.with_config({"run_name": step_name, "tags": ["researcher", step_name]}).invoke(
+            [
+                ("system", "You are a careful research assistant. Be concise and label uncertainty."),
+                ("human", instruction),
+            ]
+        )
+        content = response.content
+        return content if isinstance(content, str) and content else fallback
     except Exception as error:
         print(f"[offline] The model was unavailable ({type(error).__name__}); continuing without it.")
         return fallback
 
 
+def extract_sources(raw: str, question: str) -> list[dict[str, object]]:
+    """Turn the retriever's JSON into safe UI records, with an offline fallback."""
+    try:
+        cleaned = raw.strip().removeprefix("```json").removesuffix("```").strip()
+        records = json.loads(cleaned)
+        if isinstance(records, list):
+            valid = []
+            for record in records[:6]:
+                if not isinstance(record, dict) or not record.get("title"):
+                    continue
+                title = str(record["title"])
+                url = str(record.get("url", ""))
+                if not url.startswith(("http://", "https://")):
+                    url = ""
+                valid.append({
+                    "type": str(record.get("type", "SOURCE")).upper(),
+                    "title": title,
+                    "meta": str(record.get("meta", "LLM retriever")),
+                    "score": str(record.get("score", "—")),
+                    "url": url,
+                })
+            if valid:
+                return valid
+    except (ValueError, TypeError):
+        pass
+    return []
+
 # Nodes: each small function does one job and returns only what it added.
-def retrieve_step(state: ResearchState) -> dict[str, str]:
+def retrieve_step(state: ResearchState) -> dict[str, object]:
     question = state["question"]
+    notify_progress("retrieve", "running", "Gathering source angles")
     findings = ask_llm(
-        f"For this research question, identify the most useful source types, key terms, and 3 evidence angles: {question}",
-        f"Source map for '{question}': research papers, industry reports, recent news, and primary data. Key angles: definitions, evidence, and real-world impact.",
+        f"For this research question, return exactly 3 useful sources as a JSON array only. Each item must have type (PAPER, REPORT, or NEWS), title, meta (publisher and year/date), score (0-100%), and url. Use real, verifiable URLs when you know them; otherwise use an empty url. Question: {question}",
+        "[]",
+        "contextual_retriever",
     )
-    print("-> [retrieve] done — source map added to state")
-    return {"findings": findings}
+    sources = extract_sources(findings, question)
+    notify_progress("retrieve", "complete", "Source intelligence extracted", findings, sources)
+    return {"findings": findings, "sources": sources}
 
 
 def analyze_step(state: ResearchState) -> dict[str, str]:
+    notify_progress("analyze", "running", "Validating findings")
     analysis = ask_llm(
         f"Question: {state['question']}\nSource map: {state['findings']}\nCompare the evidence angles, call out likely contradictions, and explain what would need verification.",
         "Critical read: separate established facts from predictions, compare claims across source types, and verify dates, authorship, and original data before drawing conclusions.",
+        "critical_analysis",
     )
-    print("-> [analyze] done — critical analysis added to state")
+    notify_progress("analyze", "complete", "Critical analysis added to state", analysis)
     return {"analysis": analysis}
 
 
 def insight_step(state: ResearchState) -> dict[str, str]:
+    notify_progress("insight", "running", "Connecting patterns")
     insights = ask_llm(
         f"Question: {state['question']}\nAnalysis: {state['analysis']}\nSuggest 3 useful insights or hypotheses. For each, include why it matters and one caveat.",
         "Three useful hypotheses: the strongest pattern is usually operational rather than magical; collaboration works best when roles are explicit; and quality depends on source checking. Caveat: offline mode has not retrieved live sources.",
+        "insight_generation",
     )
-    print("-> [insight] done — hypotheses added to state")
+    notify_progress("insight", "complete", "Hypotheses added to state", insights)
     return {"insights": insights}
 
 
 def report_step(state: ResearchState) -> dict[str, str]:
+    notify_progress("report", "running", "Compiling the brief")
     report = ask_llm(
         f"Write a short structured report for: {state['question']}\nFindings: {state['findings']}\nAnalysis: {state['analysis']}\nInsights: {state['insights']}\nUse headings: Executive summary, What the evidence suggests, Caveats, Next questions.",
         f"EXECUTIVE SUMMARY\n{state['question']}\n\nWHAT THE EVIDENCE SUGGESTS\nA multi-step investigation combines a source map, critical reading, and explicit hypotheses before producing a report.\n\nCAVEATS\nThis run used offline starter text; add an OpenRouter key for model-generated analysis and verify primary sources.\n\nNEXT QUESTIONS\nWhich claim deserves a deeper source check?",
+        "report_builder",
     )
-    print("-> [report] done — final report added to state")
+    notify_progress("report", "complete", "Final report added to state", report)
     return {"report": report}
 
 
@@ -96,7 +152,8 @@ builder.add_edge("retrieve", "analyze")
 builder.add_edge("analyze", "insight")
 builder.add_edge("insight", "report")
 builder.add_edge("report", END)
-app = builder.compile()
+graph = builder.compile()
+app = graph  # Keep the older app name working for the local CLI and bridge.
 
 
 def main() -> None:
@@ -105,15 +162,21 @@ def main() -> None:
     run_question(question)
 
 
-def run_question(question: str) -> ResearchState:
+def run_question(question: str, progress_callback: ProgressCallback | None = None) -> ResearchState:
     """Run one question through the graph and return the completed state."""
+    global _progress_callback
+    previous_callback = _progress_callback
+    _progress_callback = progress_callback
     print(f"\nStarting research for: {question}\n")
-    final_state = app.invoke({"question": question})
-    print("\n=== FINAL REPORT ===\n")
-    print(final_state["report"])
-    print("\nYou just ran a real LangGraph pipeline: State -> Nodes -> Edges.")
-    print("Reducers and checkpointers are natural next steps, but we kept them out of this first build.")
-    return final_state
+    try:
+        final_state = graph.invoke({"question": question})
+        print("\n=== FINAL REPORT ===\n")
+        print(final_state["report"])
+        print("\nYou just ran a real LangGraph pipeline: State -> Nodes -> Edges.")
+        print("Reducers and checkpointers are natural next steps, but we kept them out of this first build.")
+        return final_state
+    finally:
+        _progress_callback = previous_callback
 
 
 class AgentHandler(BaseHTTPRequestHandler):
@@ -155,10 +218,26 @@ class AgentHandler(BaseHTTPRequestHandler):
             if not question:
                 self.send_json(400, {"error": "Please include a question."})
                 return
-            final_state = run_question(question)
-            self.send_json(200, {"question": question, "report": final_state["report"]})
+            step_indexes = {"retrieve": 0, "analyze": 1, "insight": 2, "report": 3}
+            self.send_response(200)
+            self.add_cors()
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            def emit(event: dict[str, object]) -> None:
+                event["index"] = step_indexes.get(str(event.get("step", "")), -1)
+                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+            final_state = run_question(question, emit)
+            emit({"type": "complete", "question": question, "report": final_state["report"]})
         except Exception as error:
-            self.send_json(500, {"error": f"The agent could not finish: {type(error).__name__}"})
+            try:
+                self.send_json(500, {"error": f"The agent could not finish: {type(error).__name__}"})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
 
 def serve() -> None:

@@ -42,16 +42,19 @@ npm run dev
 
 Open the localhost URL, enter a question, and click **Run research**. The button sends the question to `agent.py`, which runs all four LangGraph nodes and returns the report to the UI. If the bridge is not running, the dashboard stays usable in demo mode and tells you exactly how to connect it.
 
-## Optional model replies
+## Optional model replies and LangSmith tracing
 
 Create a free key at [OpenRouter](https://openrouter.ai/keys), then put it in `.env`:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-your-key
 OPENROUTER_MODEL=openai/gpt-4o-mini
+LANGSMITH_API_KEY=lsv2_your-key
+LANGSMITH_TRACING=true
+LANGSMITH_PROJECT=researcher-agent
 ```
 
-Never put a real key in `agent.py` or commit `.env`.
+The graph uses LangChain's `ChatOpenRouter` integration. When LangSmith tracing is enabled, each named node is sent to the `researcher-agent` project. Never put a real key in `agent.py` or commit `.env`.
 
 ## What to watch for
 
