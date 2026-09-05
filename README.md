@@ -35,6 +35,7 @@ python3 agent.py --serve
 Keep that terminal open, then start the dashboard in another:
 
 ### Terminal -2
+Start the local dashboard in second terminal :
 ```bash
 npm run dev
 ```
