@@ -4,6 +4,8 @@ This project has two parts: the Researcher. dashboard is the visual companion, a
 
 For the architecture, technical approach, functional flow, authentication, and safety details, see the [Implementation Overview](IMPLEMENTATION.md).
 
+For prerequisite installation and validation checks, see the [Prerequisite Setup Guide](SETUP_PREREQUISITES.md).
+
 ## Run it on macOS
 
 Python 3.11 or newer is required. This computer has Python 3.14.
