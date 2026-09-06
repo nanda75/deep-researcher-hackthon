@@ -9,6 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "wrangler dev --config dist/server/wrangler.json",
+    "test": "if [ -x .venv/bin/python ]; then .venv/bin/python -m unittest discover -s tests -v; else python3 -m unittest discover -s tests -v; fi",
     "lint": "oxlint",
     "format": "oxfmt"
   },

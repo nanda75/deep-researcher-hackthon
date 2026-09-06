@@ -46,6 +46,16 @@ npm run dev
 
 Open the localhost URL, enter a question, and click **Run research**. The button sends the question to `agent.py`, which runs all four LangGraph nodes and returns the report to the UI. If the bridge is not running, the dashboard stays usable in demo mode and tells you exactly how to connect it.
 
+## Run the functional tests
+
+The executable test suite uses Python’s standard library, an isolated temporary SQLite database, and offline model mode. It does not require API keys or modify the application database:
+
+```bash
+npm test
+```
+
+The tests cover graph execution and progress events, validation and prompt-injection blocking, source filtering, registration, login, duplicate accounts, invalid credentials, logout, password-reset privacy, health checks, authorization, SSE research responses, history persistence, and history clearing.
+
 ## Optional model replies and LangSmith tracing
 
 Create a free key at [OpenRouter](https://openrouter.ai/keys), then put it in `.env`:
